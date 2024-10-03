@@ -440,6 +440,24 @@ LogicalResult StridedStoreOp::verify() {
                                          getValueToStore().getType());
 }
 
+LogicalResult VectorStoreOp::verify() {
+  if (!getStrides().empty()) {
+    return emitError("Not implemented: general vector store with strides.");
+  }
+  VectorType mask_ty = getMask().getType();
+  VectorType value_ty = getValueToStore().getType();
+  MemRefType ref_ty = getBase().getType();
+
+  if (value_ty.getElementType() != ref_ty.getElementType())
+    return emitOpError(
+        "Expected base and valueToStore element type should match");
+  if (llvm::size(getIndices()) != ref_ty.getRank())
+    return emitOpError("Expected ") << ref_ty.getRank() << " indices";
+  if (value_ty.getShape() != mask_ty.getShape())
+    return emitOpError("Expected valueToStore shape to match mask shape");
+  return success();
+}
+
 LogicalResult ReinterpretCastOp::verify() {
   auto source_type = getMemRefType(getInput());
   auto target_type = getType();
@@ -468,7 +486,7 @@ LogicalResult verifyRotateOp(Op op) {
   }
   if (op.getStride().has_value() != op.getStrideDimension().has_value()) {
     op.emitOpError(
-        "Expected  either none or both stride and stride dimension are "
+        "Expected either none or both stride and stride dimension are "
         "present");
     return failure();
   }
