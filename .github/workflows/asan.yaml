@@ -65,9 +65,9 @@ jobs:
         run: |
           source ${GITHUB_WORKSPACE}/venv/bin/activate
           cd jax
-          python build/build.py \
-            --bazel_options=--color=yes \
-            --bazel_options=--copt=-fsanitize=address \
+          python build/build.py jaxlib --verbose \
+            --bazel_build_options=--verbose_failures=true \
+            --bazel_build_options=--copt=-fsanitize=address \
             --clang_path=/usr/bin/clang-18
           pip install dist/jaxlib-*.whl
           pip install -e .
