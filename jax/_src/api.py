@@ -1719,11 +1719,12 @@ def _jvp(fun: lu.WrappedFun, primals, tangents, has_aux=False):
 
   if not has_aux:
     flat_fun, out_tree = flatten_fun_nokwargs(fun, tree_def)
-    out_primals, out_tangents = ad.jvp(flat_fun).call_wrapped(ps_flat, ts_flat)
+    out_primals, out_tangents = ad.jvp_experimental(flat_fun, ps_flat, ts_flat)
     out_tree = out_tree()
     return (tree_unflatten(out_tree, out_primals),
             tree_unflatten(out_tree, out_tangents))
   else:
+    assert False
     flat_fun, out_aux_trees = flatten_fun_nokwargs2(fun, tree_def)
     jvp_fun, aux = ad.jvp(flat_fun, has_aux=True)
     out_primals, out_tangents = jvp_fun.call_wrapped(ps_flat, ts_flat)
@@ -1742,7 +1743,7 @@ def linearize(fun: Callable, *primals, has_aux: Literal[True]
               ) -> tuple[Any, Callable, Any]:
   ...
 
-def linearize(fun: Callable, *primals, has_aux: bool = False
+def linearize(fun: Callable, *primals, has_aux: bool = False, use_experimental = True,
               ) -> tuple[Any, Callable] | tuple[Any, Callable, Any]:
   """Produces a linear approximation to ``fun`` using :py:func:`jvp` and partial eval.
 
@@ -1816,8 +1817,14 @@ def linearize(fun: Callable, *primals, has_aux: bool = False
     jaxtree_fun, out_tree = flatten_fun_nokwargs2(f, in_tree)
   else:
     jaxtree_fun, out_tree = flatten_fun_nokwargs(f, in_tree)
-  out_primals, out_pvals, jaxpr, consts, *maybe_aux = ad.linearize(
-      jaxtree_fun, *primals_flat, has_aux=has_aux)
+
+  if use_experimental:
+    out_primals, out_pvals, jaxpr, consts, *maybe_aux = ad.linearize_experimental(
+        jaxtree_fun, *primals_flat, has_aux=has_aux)
+  else:
+    out_primals, out_pvals, jaxpr, consts, *maybe_aux = ad.linearize(
+        jaxtree_fun, *primals_flat, has_aux=has_aux)
+
   if has_aux:
     out_tree, aux_tree = out_tree()
   else:

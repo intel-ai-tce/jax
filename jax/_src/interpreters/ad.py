@@ -40,7 +40,6 @@ from jax._src.util import (unzip2, safe_map, safe_zip, split_list, wrap_name,
                            as_hashable_function, weakref_lru_cache,
                            partition_list)
 
-
 zip = safe_zip
 map = safe_map
 def identity(x): return x
@@ -105,6 +104,39 @@ def jvp_subtrace_aux(tag, primals, tangents):
     aux_primals = [x.primal if isinstance(x, JVPTracer) and x._trace.tag is tag
                    else x for x in aux]
   yield (out_primals, out_tangents), aux_primals
+
+def linearize_experimental(traceable, *primals, **kwargs):
+  has_aux = kwargs.pop('has_aux', False)
+  assert not has_aux
+  with core.take_current_trace() as parent_trace:
+    frame = pe.JaxprStackFrame()
+    tangent_trace = pe.DynamicJaxprTrace(frame)
+    tangents = [tangent_trace.new_arg(get_aval(p).to_tangent_aval()) for p in primals]
+    tag = core.TraceTag()
+    linearize_trace = LinearizeTrace(parent_trace, tangent_trace, tag)
+    tracers = [LinearizeTracer(linearize_trace, p, t) for p, t in zip(primals, tangents)]
+    with core.set_current_trace(linearize_trace):
+      ans = traceable.call_wrapped(*tracers)
+
+  out_primals, out_tangents = unzip2(map(linearize_trace.to_primal_tangent_pair, ans))
+  out_tangents = map(tangent_trace.to_jaxpr_tracer, out_tangents)
+  jaxpr, consts, attrs_tracked = frame.to_jaxpr(tangent_trace, out_tangents)
+  out_tangents_pvals = [pe.PartialVal.unknown(core.get_aval(t)) for t in out_tangents]
+  del attrs_tracked # TODO: attrs
+  return out_primals, out_tangents_pvals, jaxpr, consts
+
+def jvp_experimental(traceable, primals, tangents):
+  with core.take_current_trace() as parent_trace:
+    frame = pe.JaxprStackFrame()
+    tag = core.TraceTag()
+    linearize_trace = LinearizeTrace(parent_trace, parent_trace, tag)
+    tracers = [LinearizeTracer(linearize_trace, p, t) for p, t in zip(primals, tangents)]
+    with core.set_current_trace(linearize_trace):
+      ans = traceable.call_wrapped(*tracers)
+
+  out_primals, out_tangents = unzip2(map(linearize_trace.to_primal_tangent_pair, ans))
+  return out_primals, out_tangents
+
 
 def linearize(traceable, *primals, **kwargs):
   has_aux = kwargs.pop('has_aux', False)
@@ -403,6 +435,12 @@ class JVPTrace(Trace):
 
     return map(partial(maybe_jvp_tracer, self), ps_out, ts_out)
 
+def maybe_linearize_tracer(trace, primal, tangent):
+  if type(tangent) is Zero:
+    return primal
+  else:
+    return LinearizeTracer(trace, primal, tangent)
+
 def maybe_jvp_tracer(trace, primal, tangent):
   if type(tangent) is Zero:
     return primal
@@ -442,6 +480,71 @@ def _primal_tangent_shapes_match(primal, tangent):
 
 call_param_updaters: dict[core.Primitive, Callable] = {}
 call_transpose_param_updaters: dict[core.Primitive, Callable] = {}
+
+# -------------------- Linearize trace --------------------
+
+class LinearizeTrace(Trace):
+
+  def __init__(self, parent_trace, tangent_trace, tag):
+    self.tag = tag
+    self.parent_trace = parent_trace
+    self.tangent_trace = tangent_trace
+
+  def to_primal_tangent_pair(self, val):
+    if isinstance(val, LinearizeTracer) and val._trace.tag is self.tag:
+      return (val.primal, val.tangent)
+    else:
+      tangent_zero = Zero.from_primal_value(val)
+      return (val, tangent_zero)
+
+  def process_primitive(self, primitive, args, params):
+    primals_in, tangents_in = unzip2(map(self.to_primal_tangent_pair, args))
+    if all(type(t) is Zero for t in tangents_in):
+      return primitive.bind_with_trace(self.parent_trace, primals_in, params)
+    lin = get_linearize_rule(primitive)
+    if not lin:
+      msg = f"Differentiation rule for '{primitive}' not implemented"
+      raise NotImplementedError(msg)
+    with core.set_current_trace(self.parent_trace):
+      primal_out, linearized = lin(*primals_in)
+      with core.set_current_trace(self.tangent_trace):
+        tangent_out = linearized(*tangents_in)
+    if primitive.multiple_results:
+      return [maybe_linearize_tracer(self, x, t) for x, t in zip(primal_out, tangent_out)]
+    else:
+      return maybe_linearize_tracer(self, primal_out, tangent_out)
+
+def get_linearize_rule(prim):
+  import jax
+  jax.linearize
+  def call_prim(*args):
+    return prim.bind(*args)
+  rule = lambda *args: jax.linearize(call_prim, *args, use_experimental=False)
+  return rule
+
+
+class LinearizeTracer(Tracer):
+  __slots__ = ['primal', 'tangent']
+
+  def __init__(self, trace, primal, tangent):
+    if config.enable_checks.value:
+      _primal_tangent_shapes_match(primal, tangent)
+    self._trace = trace
+    self.primal = primal
+    self.tangent = tangent
+
+  @property
+  def aval(self):
+    return get_aval(self.primal)
+
+  def full_lower(self):
+    if type(self.tangent) is Zero:
+      return core.full_lower(self.primal)
+    else:
+      return self
+
+  def to_concrete_value(self):
+    return core.to_concrete_value(self.primal)
 
 
 # -------------------- Primitives --------------------
