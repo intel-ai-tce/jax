@@ -16,13 +16,12 @@ from __future__ import annotations
 import collections
 from collections.abc import Callable, Hashable, Iterable, Sequence
 import dataclasses
-from dataclasses import dataclass
 import difflib
 import functools
 from functools import partial
 import operator as op
 import textwrap
-from typing import Any, NamedTuple, TypeVar, Union, overload
+from typing import Any, NamedTuple, TypeVar, overload
 
 from jax._src import traceback_util
 from jax._src.lib import pytree
@@ -209,12 +208,22 @@ def all_leaves(iterable: Iterable[Any],
 
 _Children = TypeVar("_Children", bound=Iterable[Any])
 _AuxData = TypeVar("_AuxData", bound=Hashable)
+KeyEntry = TypeVar("KeyEntry", bound=Hashable)
+KeyLeafPair = tuple[KeyEntry, Any]
+KeyLeafPairs = Iterable[KeyLeafPair]
+KeyPath = tuple[KeyEntry, ...]
+# KeyPath = Sequence[KeyEntry]
 
 
 @export
-def register_pytree_node(nodetype: type[T],
-                         flatten_func: Callable[[T], tuple[_Children, _AuxData]],
-                         unflatten_func: Callable[[_AuxData, _Children], T]) -> None:
+def register_pytree_node(
+    nodetype: type[T],
+    flatten_func: Callable[[T], tuple[_Children, _AuxData]],
+    unflatten_func: Callable[[_AuxData, _Children], T],
+    flatten_with_keys_func: (
+        Callable[[T], tuple[KeyLeafPairs, _AuxData]] | None
+    ) = None,
+) -> None:
   """Extends the set of types that are considered internal nodes in pytrees.
 
   See :ref:`example usage <pytrees>`.
@@ -279,7 +288,9 @@ def register_pytree_node(nodetype: type[T],
     >>> jax.jit(f)(m)
     Array([1., 2., 3., 4., 5.], dtype=float32)
   """
-  default_registry.register_node(nodetype, flatten_func, unflatten_func)
+  default_registry.register_node(
+      nodetype, flatten_func, unflatten_func, flatten_with_keys_func
+  )
   none_leaf_registry.register_node(nodetype, flatten_func, unflatten_func)
   dispatch_registry.register_node(nodetype, flatten_func, unflatten_func)
   _registry[nodetype] = _RegistryEntry(flatten_func, unflatten_func)
@@ -578,11 +589,11 @@ def broadcast_prefix(prefix_tree: Any, full_tree: Any,
 
 
 # flatten_one_level is not exported.
-def flatten_one_level(pytree: Any) -> tuple[Iterable[Any], Hashable]:
+def flatten_one_level(tree: Any) -> tuple[Iterable[Any], Hashable]:
   """Flatten the given pytree node by one level.
 
   Args:
-    pytree: A valid pytree node, either built-in or registered via
+    tree: A valid pytree node, either built-in or registered via
       :func:`register_pytree_node` or related functions.
 
   Returns:
@@ -601,9 +612,9 @@ def flatten_one_level(pytree: Any) -> tuple[Iterable[Any], Hashable]:
     >>> meta
     ('a', 'b')
   """
-  out = default_registry.flatten_one_level(pytree)
+  out = default_registry.flatten_one_level(tree)
   if out is None:
-    raise ValueError(f"can't tree-flatten type: {type(pytree)}")
+    raise ValueError(f"can't tree-flatten type: {type(tree)}")
   else:
     return out
 
@@ -704,46 +715,10 @@ def _equality_errors(path, t1, t2, is_leaf):
     yield from _equality_errors((*path, k), c1, c2, is_leaf)
 
 
-@export
-@dataclass(frozen=True)
-class SequenceKey():
-  """Struct for use with :func:`jax.tree_util.register_pytree_with_keys`."""
-  idx: int
-  def __str__(self):
-    return f'[{self.idx!r}]'
-
-
-@export
-@dataclass(frozen=True)
-class DictKey():
-  """Struct for use with :func:`jax.tree_util.register_pytree_with_keys`."""
-  key: Hashable
-  def __str__(self):
-    return f'[{self.key!r}]'
-
-
-@export
-@dataclass(frozen=True)
-class GetAttrKey():
-  """Struct for use with :func:`jax.tree_util.register_pytree_with_keys`."""
-  name: str
-  def __str__(self):
-    return f'.{self.name}'
-
-
-@export
-@dataclass(frozen=True)
-class FlattenedIndexKey():
-  """Struct for use with :func:`jax.tree_util.register_pytree_with_keys`."""
-  key: int
-  def __str__(self):
-    return f'[<flat index {self.key}>]'
-
-BuiltInKeyEntry = Union[SequenceKey, DictKey, GetAttrKey, FlattenedIndexKey]
-
-KeyEntry = TypeVar("KeyEntry", bound=Hashable)
-KeyPath = tuple[KeyEntry, ...]
-
+SequenceKey = pytree.SequenceKey
+DictKey = pytree.DictKey
+GetAttrKey = pytree.GetAttrKey
+FlattenedIndexKey = pytree.FlattenedIndexKey
 
 @export
 def keystr(keys: KeyPath):
@@ -764,6 +739,7 @@ def keystr(keys: KeyPath):
   return ''.join(map(str, keys))
 
 
+# TODO(ivyzheng): remove this after _child_keys() also moved to C++.
 class _RegistryWithKeypathsEntry(NamedTuple):
   flatten_with_keys: Callable[..., Any]
   unflatten_func: Callable[..., Any]
@@ -779,7 +755,6 @@ def _register_keypaths(
     _registry_with_keypaths[ty] = _RegistryWithKeypathsEntry(
         flatten_with_keys, _registry[ty].from_iter
     )
-
 
 _registry_with_keypaths: dict[type[Any], _RegistryWithKeypathsEntry] = {}
 
@@ -803,13 +778,9 @@ _register_keypaths(
 @export
 def register_pytree_with_keys(
     nodetype: type[T],
-    flatten_with_keys: Callable[
-        [T], tuple[Iterable[tuple[KeyEntry, Any]], _AuxData]
-    ],
+    flatten_with_keys: Callable[[T], tuple[Iterable[KeyLeafPair], _AuxData]],
     unflatten_func: Callable[[_AuxData, Iterable[Any]], T],
-    flatten_func: None | (
-        Callable[[T], tuple[Iterable[Any], _AuxData]]
-    ) = None,
+    flatten_func: None | (Callable[[T], tuple[Iterable[Any], _AuxData]]) = None,
 ):
   """Extends the set of types that are considered internal nodes in pytrees.
 
@@ -870,7 +841,9 @@ def register_pytree_with_keys(
       return [c for _, c in key_children], treedef
     flatten_func = flatten_func_impl
 
-  register_pytree_node(nodetype, flatten_func, unflatten_func)
+  register_pytree_node(
+      nodetype, flatten_func, unflatten_func, flatten_with_keys
+  )
   _registry_with_keypaths[nodetype] = _RegistryWithKeypathsEntry(
       flatten_with_keys, unflatten_func
   )
@@ -1144,8 +1117,7 @@ def tree_flatten_with_path(
     which contains a leaf and its key path. The second element is a treedef
     representing the structure of the flattened tree.
   """
-  _, tree_def = tree_flatten(tree, is_leaf)
-  return _generate_key_paths(tree, is_leaf), tree_def
+  return default_registry.flatten_with_path(tree, is_leaf)
 
 
 @export
@@ -1164,49 +1136,14 @@ def tree_leaves_with_path(
     - :func:`jax.tree_util.tree_leaves`
     - :func:`jax.tree_util.tree_flatten_with_path`
   """
-  return _generate_key_paths(tree, is_leaf)
+  return tree_flatten_with_path(tree, is_leaf)[0]
 
 
 # generate_key_paths is not exported.
 def generate_key_paths(
     tree: Any, is_leaf: Callable[[Any], bool] | None = None
 ) -> list[tuple[KeyPath, Any]]:
-  return list(_generate_key_paths_((), tree, is_leaf))
-_generate_key_paths = generate_key_paths  # alias for backward compat
-
-
-# The overall logic should be same as PyTreeDef::FlattenIntoImpl
-def _generate_key_paths_(
-    key_path: KeyPath,
-    tree: Any,
-    is_leaf: Callable[[Any], bool] | None = None,
-) -> Iterable[tuple[KeyPath, Any]]:
-  if is_leaf and is_leaf(tree):
-    yield key_path, tree
-    return
-  key_handler = _registry_with_keypaths.get(type(tree))
-  if key_handler:
-    key_children, _ = key_handler.flatten_with_keys(tree)
-    for k, c in key_children:
-      yield from _generate_key_paths_((*key_path, k), c, is_leaf)
-    return
-
-  flat = default_registry.flatten_one_level(tree)
-  if flat is None:
-    yield key_path, tree  # strict leaf type
-    return
-
-  if (isinstance(tree, tuple) and hasattr(tree, '_fields') and
-      flat[1] == type(tree)):
-    # handle namedtuple as a special case, based on heuristic
-    key_children = [(GetAttrKey(s), getattr(tree, s)) for s in tree._fields]
-    for k, c in key_children:
-      yield from _generate_key_paths_((*key_path, k), c, is_leaf)
-    return
-
-  for i, c in enumerate(flat[0]):
-    k = FlattenedIndexKey(i)
-    yield from _generate_key_paths_((*key_path, k), c, is_leaf)
+  return tree_leaves_with_path(tree, is_leaf)
 
 
 @export

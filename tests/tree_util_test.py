@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import collections
+from collections.abc import Hashable
 import dataclasses
 import functools
 import pickle
@@ -27,10 +28,14 @@ from jax._src import test_util as jtu
 from jax._src.tree_util import flatten_one_level, prefix_errors
 import jax.numpy as jnp
 
+# Easier to read.
+SequenceKey = tree_util.SequenceKey
+DictKey = tree_util.DictKey
+GetAttrKey = tree_util.GetAttrKey
+
 
 def _dummy_func(*args, **kwargs):
   return
-
 
 ATuple = collections.namedtuple("ATuple", ("foo", "bar"))
 
@@ -315,6 +320,12 @@ class TreeTest(jtu.JaxTestCase):
     self.assertEqual(actual.func, inputs.func)
     self.assertEqual(actual.args, inputs.args)
     self.assertEqual(actual.keywords, inputs.keywords)
+
+  @parameterized.parameters(*(TREES + LEAVES))
+  def testRoundtripWithPath(self, inputs):
+    xs, tree = tree_util.tree_flatten_with_path(inputs)
+    actual = tree_util.tree_unflatten(tree, [x for _, x in xs])
+    self.assertEqual(actual, inputs)
 
   def testPartialDoesNotMergeWithOtherPartials(self):
     def f(a, b, c): pass
@@ -757,6 +768,75 @@ class TreeTest(jtu.JaxTestCase):
             "['sub'][1].bar[0]: None",
         ],
     )
+
+  def testTreeFlattenWithPathBuiltin(self):
+    x = (1, {"a": 2, "b": 3})
+    flattened = tree_util.tree_flatten_with_path(x)
+    _, tdef = tree_util.tree_flatten(x)
+    self.assertEqual(
+        flattened[0],
+        [
+            ((SequenceKey(0),), 1),
+            ((SequenceKey(1), DictKey("a")), 2),
+            ((SequenceKey(1), DictKey("b")), 3),
+        ],
+    )
+    self.assertEqual(flattened[1], tdef)
+
+  def testTreeFlattenWithPathCustom(self):
+    x = [
+        AnObject2(
+            x=12,
+            y={"foo": SpecialWithKeys(x=2, y=3), "bar": None},
+            z="constantdef",
+        ),
+        5,
+    ]
+    flattened, _ = tree_util.tree_flatten_with_path(x)
+    print(f"llss {flattened = }")
+    self.assertEqual(
+        flattened,
+        [
+            ((SequenceKey(0), "x"), 12),
+            ((SequenceKey(0), "y", DictKey("foo"), GetAttrKey("x")), 2),
+            ((SequenceKey(0), "y", DictKey("foo"), GetAttrKey("y")), 3),
+            ((SequenceKey(1),), 5),
+        ],
+    )
+
+  def testCreatingKeys(self):
+    def assert_equal_and_hash_equal(a, b):
+      self.assertEqual(a, b)
+      self.assertEqual(hash(a), hash(b))
+
+    key = SequenceKey(1)
+    self.assertEqual(str(key), "[1]")
+    self.assertEqual(key.idx, 1)
+    assert_equal_and_hash_equal(key, SequenceKey(1))
+
+    class DictKeyEntry(Hashable):
+
+      def __init__(self, s: str):
+        self.s = s
+
+      def __hash__(self):
+        return hash(self.s)
+
+      def __eq__(self, other):
+        return self.s == other.s
+
+    key = DictKey("foo")
+    self.assertEqual(str(key), "['foo']")
+    self.assertEqual(key.key, "foo")
+    assert_equal_and_hash_equal(key, DictKey("foo"))
+    assert_equal_and_hash_equal(
+        DictKey(DictKeyEntry("foo")), DictKey(DictKeyEntry("foo"))
+    )
+
+    key = GetAttrKey("bar")
+    self.assertEqual(str(key), ".bar")
+    self.assertEqual(key.name, "bar")
+    assert_equal_and_hash_equal(key, GetAttrKey("bar"))
 
   def testFlattenOneLevel(self):
     EmptyTuple = collections.namedtuple("EmptyTuple", ())
