@@ -466,7 +466,8 @@ def _share_fdo_profiles(
   compile_options.executable_build_options.fdo_profile = b""
   profile_key = (
       compilation_cache.get_cache_key(
-          computation, devices, compile_options, backend
+          computation, devices, compile_options, backend,
+          ignore_host_callbacks=True
       )
       + "_fdo_sync"
   )

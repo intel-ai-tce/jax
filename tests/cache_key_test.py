@@ -205,6 +205,19 @@ class CacheKeyTest(jtu.JaxTestCase):
           for bc in bcs:
             self.assertEqual(bc, "REMOVED")
 
+      with config.remove_custom_partitioning_ptr_from_cache_key(False):
+        compile_options = compiler.get_compile_options(
+            num_replicas=1, num_partitions=1
+        )
+        backend = xla_bridge.get_backend()
+        hash_without_callback_ptrs = cache_key.get(computation, devices,
+                                                   compile_options,
+                                                   backend,
+                                                   ignore_host_callbacks=True)
+        expected_hash = cache_key.get(updated_module, devices, compile_options,
+                                      backend)
+        self.assertEqual(expected_hash, hash_without_callback_ptrs)
+
   def test_different_device_assignment(self):
     computation = jax.jit(lambda x, y: x + y).lower(1, 1).compiler_ir()
     devices = np.array([[jax.local_devices()[0]]])

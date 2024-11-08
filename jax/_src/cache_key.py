@@ -65,7 +65,8 @@ def get(module: ir.Module,
         devices: np.ndarray,
         compile_options: xla_client.CompileOptions,
         backend: xla_client.Client,
-        compression_algorithm: str = "zstandard") -> str:
+        compression_algorithm: str = "zstandard",
+        ignore_host_callbacks: bool = False) -> str:
   """Creates a hashed string to use as a key to the compilation cache.
 
   Creates a cache key that is a hex-encoded string of a unique hash based on
@@ -78,13 +79,17 @@ def get(module: ir.Module,
     backend: description of the platform (e.g., TPU version)
     compression_algorithm: a string representing the compression algorithm used
       for the executable before persisting in the cache
+    ignore_host_callbacks: whether to remove the host callback pointer from
+      the computation. This does the same as
+      jax_remove_custom_partitioning_ptr_from_cache_key, but explicitally.
 
   Typical return value example:
    'jit__psum-14ac577cdb2ef6d986078b4054cc9893a9a14a16dbb0d8f37b89167c1f1aacdf'
   """
   entries = [
       ("computation",
-       lambda hash_obj: _hash_computation(hash_obj, module)),
+       lambda hash_obj: _hash_computation(hash_obj, module,
+                                          ignore_host_callbacks)),
       ("jax_lib version",
        lambda hash_obj: hash_obj.update(
            bytes(jaxlib_version_str.encode("utf-8")))),
@@ -145,30 +150,35 @@ def _remove_custom_partitioning_ptr(m: ir.Module):
   return m
 
 
-def _serialize_ir(m: ir.Module) -> bytes:
+def _serialize_ir(m: ir.Module, ignore_host_callbacks: bool) -> bytes:
   output = io.BytesIO()
-  if config.remove_custom_partitioning_ptr_from_cache_key.value:
+  if (
+      ignore_host_callbacks
+      or config.remove_custom_partitioning_ptr_from_cache_key.value
+  ):
     m = _remove_custom_partitioning_ptr(type_cast(ir.Module,
                                                   m.operation.clone()))
   m.operation.write_bytecode(file=output)
   return output.getvalue()
 
 
-def _canonicalize_ir(m_original: ir.Module) -> bytes:
+def _canonicalize_ir(
+    m_original: ir.Module, ignore_host_callbacks: bool
+) -> bytes:
   with m_original.context:
     m = type_cast(ir.Module, m_original.operation.clone())
     passes = pm.PassManager.parse(
         "builtin.module(strip-debuginfo)"
     )
     passes.run(m.operation)
-    return _serialize_ir(m)
+    return _serialize_ir(m, ignore_host_callbacks)
 
 
-def _hash_computation(hash_obj, module):
+def _hash_computation(hash_obj, module, ignore_host_callbacks):
   if config.compilation_cache_include_metadata_in_key.value:
-    canonical_ir = _serialize_ir(module)
+    canonical_ir = _serialize_ir(module, ignore_host_callbacks)
   else:
-    canonical_ir = _canonicalize_ir(module)
+    canonical_ir = _canonicalize_ir(module, ignore_host_callbacks)
   hash_obj.update(canonical_ir)
 
 
