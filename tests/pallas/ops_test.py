@@ -1968,6 +1968,37 @@ class OpsTest(PallasBaseTest):
     np.testing.assert_array_equal(y, y_ref)
 
 
+  @parameterized.product(
+      array_shapes=[(4, 128), (10, 100), (8, 128), (17, 257)],
+      padding=[
+          ((5, 8), (0, 0)),
+          ((0, 0), (5, 100)),
+          ((1, 1), (1, 1)),
+          ((0, 0), (0, 0)),
+      ],
+      pad_type=["constant", "wrap"],
+  )
+  def test_arbitrary_padding_jnp_pad(self, array_shapes, padding, pad_type):
+    if jtu.test_device_matches(["gpu"]):
+      self.skipTest("Not implemented on GPU")
+
+    x = jnp.arange(np.prod(array_shapes), dtype=jnp.float32).reshape(
+        array_shapes
+    )
+
+    def kernel(x_ref, o_ref):
+      o_ref[...] = jnp.pad(x_ref[...], padding, mode=pad_type)
+
+    ref = jnp.pad(x, padding, mode=pad_type)
+
+    out_shape = jax.ShapeDtypeStruct(ref.shape, x.dtype)
+    out = self.pallas_call(
+        kernel,
+        out_shape=out_shape,
+    )(x)
+    np.testing.assert_array_equal(out, jnp.pad(x, padding, mode=pad_type))
+
+
 class OpsInterpretTest(OpsTest):
   INTERPRET = True
 
