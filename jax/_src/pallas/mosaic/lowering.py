@@ -1315,12 +1315,20 @@ def _masked_swap_lowering_rule(
     ctx: LoweringRuleContext, *args_flat, args_tree, **_
 ):
   ref, transforms, val, mask = args_tree.unflatten(args_flat)
-  ref_aval, transforms_avals, val_aval, _ = args_tree.unflatten(ctx.avals_in)
+  ref_aval, transforms_avals, val_aval, mask_aval = args_tree.unflatten(
+      ctx.avals_in
+  )
   (*prev_transforms, idx) = transforms
   (*_, idx_aval) = transforms_avals
 
   if mask is not None:
-    raise NotImplementedError
+    if  val_aval.dtype.itemsize != 4:
+      raise NotImplementedError("masked swap with non-32-bit data")
+    if val_aval.shape != mask_aval.shape:
+      raise ValueError(
+          "Expected value and mask to have the same shape, but got"
+          f" {val_aval.shape} vs. {mask_aval.shape}"
+      )
 
   ref_block_shape, *_ = ctx.block_shapes
   ref, ref_block_shape = _transform_ref(
@@ -1351,6 +1359,8 @@ def _masked_swap_lowering_rule(
   need_stride = not all((s is None or s == 1) for s in strides)
 
   if is_smem_store:
+    if mask is not None:
+      raise ValueError("SMEM store does not support masks")
     if val_aval.shape:
       raise ValueError("Can only store scalars to SMEM")
     result = memref.load(ref, starts)
@@ -1401,7 +1411,7 @@ def _masked_swap_lowering_rule(
   if need_stride:
     tpu.StridedStoreOp(val, ref, starts, strides)
   else:
-    vector.StoreOp(val, ref, starts)
+    tpu.VectorStoreOp(val, ref, starts, [], mask=mask)
   return result
 
 
