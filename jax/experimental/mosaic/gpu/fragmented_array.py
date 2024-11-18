@@ -636,7 +636,7 @@ class FragmentedArray:
           raise NotImplementedError(o)
 
         o = FragmentedArray.splat(
-            o, shape=self.shape, layout=self.layout, is_signed=is_signed
+            o, shape=self.shape, layout=self.layout, is_signed=self.is_signed
         )
 
       if isinstance(o.layout, WGSplatFragLayout):
@@ -646,7 +646,7 @@ class FragmentedArray:
             o.registers.flat[0],
             shape=self.shape,
             layout=self.layout,
-            is_signed=is_signed,
+            is_signed=self.is_signed,
         )
       else:
         if self.layout != o.layout:
